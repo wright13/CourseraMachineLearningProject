@@ -1,0 +1,104 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Sarah E. Wright"
+date: "August 15, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(caret)
+library(dplyr)
+library(parallel)
+library(doParallel)
+library(randomForest)
+set.seed(12345)
+```
+
+## Introduction
+The purpose of this project is to use accelerometer data to predict how well an individual performs barbell lifts. Accelerometers were attached to each participant's forearm, upper arm, waist, and the dumbbell they were lifting. They were instructed either to lift the dumbbell correctly (class A) or to lift it in one of several incorrect ways (classes B through E). 
+
+## Data Exploration and Cleaning
+
+After importing the training and testing data, I did some basic data cleanup. Several columns contained mostly NA values, so I removed them. I verified that none of the accelerometer data columns had near zero variance.
+```{r import.data, include = FALSE}
+# Read training and testing data into their respective dataframes
+training <- read.csv("pml-training.csv", header = TRUE, na.strings = c("NA", "#DIV/0!", ""), as.is = FALSE)
+testing <- read.csv("pml-testing.csv", header = TRUE, as.is = FALSE)
+head(training)
+summary(training)
+head(testing)
+
+# Clean up data
+# Remove columns that are empty or mostly NA
+training.na <- sapply(training, function(x) any(is.na(x)))
+testing.na <- sapply(testing, function(x) any(is.na(x)))
+training <- training[, !training.na]
+testing <- testing[, !testing.na]
+
+# Check for columns with near zero variance
+near.zero <- nearZeroVar(training, saveMetrics = TRUE)
+near.zero[near.zero$nzv == TRUE,]
+
+```
+
+## Partitioning Data
+
+Since the training dataset is so large, I split it into a training set and a validation set.
+```{r}
+inTrain <- createDataPartition(y = training$classe, p = 0.66, list = FALSE)
+training <- training[inTrain,]
+validation <- training[-inTrain,]
+```
+
+## The Model
+
+I used the random forest method to generate a model using all accelerometer variables, and then used the `varImpPlot` function to identify the most important variables. My final model used the `roll_belt`, `pitch_forearm`, `yaw_belt`, `magnet_dumbbell_z`, `magnet_dumbbell_y`, and `pitch_belt` variables to predict how barbell lifts were performed. By default, the random forest method uses the bootstrapping method of cross-validation. This default was effective, so I chose to stick with it.
+```{r cache = TRUE}
+# Use random forest
+# x <- training[, -1]
+# y <- training[, 1]
+x <- training[, 8:59]
+y <- training[, 60]
+
+# Enable parallel processing
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+
+# Configure trainControl
+control <- trainControl(allowParallel = TRUE)
+
+# Generate a model using all accelerometer variables (takes a long time!)
+modelFit <- train(x, y, method = "rf", trControl = control)
+confusionMatrix.train(modelFit)
+pred <- predict(modelFit, validation[, -60])
+confusionMatrix(validation$classe, pred)
+
+# Plot the importance of each accelerometer variable
+varImpPlot(modelFit$finalModel)
+
+# Generate a model using only the most important accelerometer variables
+finalx <- select(x, c(roll_belt, pitch_forearm, yaw_belt, magnet_dumbbell_z, magnet_dumbbell_y, pitch_belt))
+finalValidation <- select(validation, c(classe, roll_belt, pitch_forearm, yaw_belt, magnet_dumbbell_z, magnet_dumbbell_y, pitch_belt))
+
+finalFit <- train(finalx, y, method = "rf", trControl = control)
+confusionMatrix.train(finalFit)
+finalPred <- predict(finalFit, finalValidation[, -1])
+confusionMatrix(finalValidation$classe, finalPred)
+
+# Stop parallel processing
+stopCluster(cluster)
+registerDoSEQ()
+
+# Generate predictions from test data set
+predict(finalFit, select(testing, c(roll_belt, pitch_forearm, yaw_belt, magnet_dumbbell_z, magnet_dumbbell_y, pitch_belt)))
+```
+The average in-sample accuracy was approximately 97%, and the estimated out of sample accuracy (based on the validation data) was over 99%.
+
+
+## References
+
+Dataset information: http://groupware.les.inf.puc-rio.br/har#literature
+Improving random forest performance with parallel processing: https://github.com/lgreski/datasciencectacontent/blob/master/markdown/pml-randomForestPerformance.md
+Variable importance plot: https://www.coursera.org/learn/practical-machine-learning/discussions/weeks/4/threads/Ky6PexfEEee27wrfbfj87A/replies/GdTC7hifEee62Q6dSy_31g
